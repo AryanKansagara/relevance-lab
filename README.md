@@ -2,7 +2,7 @@
 
 Understand and tune why Elasticsearch ranked results the way it did, across keyword and hybrid (keyword + vector) search.
 
-Live: LIVE_URL
+Live: https://relevance-lab-snowy.vercel.app
 
 ## The pain
 
