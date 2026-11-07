@@ -124,7 +124,7 @@ export function normalize(scores: number[], kind: Normalizer): number[] {
   }
   const min = Math.min(...scores)
   const max = Math.max(...scores)
-  // identical scores map to 1; ES clamps this degenerate case internally, verify on real data.
+  // Identical scores map to 1; ES clamps this degenerate case internally, verify on real data.
   return max === min ? scores.map(() => 1) : scores.map((s) => (s - min) / (max - min))
 }
 

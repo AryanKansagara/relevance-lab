@@ -43,7 +43,7 @@ function minimalStem(s: string) {
 }
 
 export function analyze(text: string, analyzer: Analyzer = 'standard'): string[] {
-  // regex word split, close to UAX#29 for Latin text. Port a segmenter if non-Latin corpora matter.
+  // Regex word split, close to UAX#29 for Latin text. Port a segmenter if non-Latin corpora matter.
   const tokens = text.toLowerCase().match(/[\p{L}\p{N}]+(?:['._][\p{L}\p{N}]+)*/gu) ?? []
   if (analyzer === 'standard') return tokens
   return tokens.map((t) => t.replace(/'s$/, '')).filter((t) => !STOP.has(t)).map(minimalStem)
