@@ -162,7 +162,7 @@ export function parseNode(raw: RawExplanation, path = '0', inFunction = false): 
   if (/^(sum of:?|sum of|function score, score mode \[sum\].*)$/.test(d)) return agg('sum')
   if (/^(max of:?|function score, score mode \[max\].*)$/.test(d)) return agg('max')
   if ((m = d.match(new RegExp(`^max plus ${NUM} times others of:?$`)))) return { ...agg('max'), tie: +m[1] }
-  if (/^(product of:?|function score, product of:?|function score, score mode \[multiply\].*|match on required clause, product of:?)$/.test(d)) return agg('product')
+  if (/^(product of:?|Boosted score, product of:?|function score, product of:?|function score, score mode \[multiply\].*|match on required clause, product of:?)$/.test(d)) return agg('product')
   if (/^(min of:?|function score, score mode \[min\].*)$/.test(d)) return agg('min')
   if (/^(avg of:?|function score, score mode \[avg\].*)$/.test(d)) return agg('avg')
   if (/^maxBoost$/.test(d)) return { ...base, kind: 'maxBoost', label: 'max_boost', children: [] }
@@ -185,9 +185,13 @@ export function parseNode(raw: RawExplanation, path = '0', inFunction = false): 
   if ((m = d.match(/^rrf score: \[0(?:\.0)?\], result not found in query at index \[(\d+)\]/))) {
     return { ...base, kind: 'noMatch', label: `not in retriever ${m[1]}`, source: { index: +m[1] }, children: [] }
   }
-  if ((m = d.match(new RegExp(`^rrf score: \\[${NUM}\\], for rank \\[(\\d+)\\] in query at index \\[(\\d+)\\](?: \\[([^\\]]+)\\])?`)))) {
+  // ES reports the rank as this node's value; the RRF contribution is only in the description.
+  // Older docs show named queries as "in query [name]" without "at index [i]".
+  if ((m = d.match(new RegExp(`^rrf score: \\[${NUM}\\], for rank \\[(\\d+)\\] in query (?:at index \\[(\\d+)\\](?: \\[([^\\]]+)\\])?|\\[([^\\]]+)\\])`)))) {
     const children = kids()
-    return { ...base, kind: 'rrfSource', label: `${retrieverName(+m[3], m[4], children)} rank ${m[2]}`, source: { index: +m[3], name: m[4], rank: +m[2] }, children }
+    const index = m[3] != null ? +m[3] : +path.split('.').pop()!
+    const name = m[4] ?? m[5]
+    return { ...base, value: +m[1], kind: 'rrfSource', label: `${retrieverName(index, name, children)} rank ${m[2]}`, source: { index, name, rank: +m[2] }, children }
   }
   if (/^weighted linear combination score/.test(d)) {
     return { ...base, kind: 'linear', label: 'Linear fusion', children: kids() }
@@ -313,15 +317,16 @@ export function parseResponse(input: string | unknown): ParsedResponse {
     if (o.responses.length !== 1) throw new ExplainParseError(`This is an _msearch response with ${o.responses.length} searches.`, 'Paste one element of "responses" so ranks are not mixed between queries.')
     return parseResponse(o.responses[0])
   }
-  if (o.hits?.hits) {
-    const raw: RawHit[] = o.hits.hits
+  if (o.hits?.hits || Array.isArray(o.hits)) {
+    // Some Elastic docs abbreviate the response to {"hits": [...]}.
+    const raw: RawHit[] = Array.isArray(o.hits) ? o.hits : o.hits.hits
     if (!raw.length) throw new ExplainParseError('The response has zero hits, so there is nothing to explain.', 'Check the query matches documents, or try _explain on a specific document ID.')
     if (raw.every((h) => h._score == null) && raw.some((h: any) => h.sort)) {
       throw new ExplainParseError('These hits are sorted by field with _score: null.', 'A custom sort means relevance score did not decide the order. Add "track_scores": true or remove the sort.')
     }
     const total = typeof o.hits.total === 'number' ? o.hits.total : o.hits.total?.value
     const notes: string[] = []
-    if (o.hits.hits.length < (total ?? 0)) notes.push(`Response has ${raw.length} of ${total} matching docs. Replay can only reorder what was returned; raise "size" to see docs entering from below.`)
+    if (raw.length < (total ?? 0)) notes.push(`Response has ${raw.length} of ${total} matching docs. Replay can only reorder what was returned; raise "size" to see docs entering from below.`)
     return { shape: 'search', hits: raw.map((h, i) => toHit(h, i)), total, notes }
   }
   if ('matched' in o && ('explanation' in o || o.matched === false)) {

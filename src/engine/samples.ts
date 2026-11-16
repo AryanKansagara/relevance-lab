@@ -144,13 +144,13 @@ function hybrid() {
     const ranks = `[${r.kw ?? 0}, ${r.v ?? 0}]`
     if (r.kw) {
       const inner = kwTree(KW_DOCS.findIndex((k) => k[0] === r.id))
-      kids.push({ value: f(1 / (c + r.kw)), description: `rrf score: [${f(1 / (c + r.kw))}], for rank [${r.kw}] in query at index [0] computed as [1 / (${r.kw} + ${c})], for matching query with score`, details: [inner] })
+      kids.push({ value: r.kw, description: `rrf score: [${f(1 / (c + r.kw))}], for rank [${r.kw}] in query at index [0] computed as [1 / (${r.kw} + ${c})], for matching query with score`, details: [inner] })
     } else {
       kids.push({ value: 0, description: 'rrf score: [0], result not found in query at index [0]', details: [] })
     }
     if (r.v) {
       const sim = VECTOR[r.v - 1][1]
-      kids.push({ value: f(1 / (c + r.v)), description: `rrf score: [${f(1 / (c + r.v))}], for rank [${r.v}] in query at index [1] computed as [1 / (${r.v} + ${c})], for matching query with score`, details: [{ value: sim, description: `found vector with calculated similarity: ${sim}`, details: [] }] })
+      kids.push({ value: r.v, description: `rrf score: [${f(1 / (c + r.v))}], for rank [${r.v}] in query at index [1] computed as [1 / (${r.v} + ${c})], for matching query with score`, details: [{ value: sim, description: 'within top k documents', details: [] }] })
     } else {
       kids.push({ value: 0, description: 'rrf score: [0], result not found in query at index [1]', details: [] })
     }

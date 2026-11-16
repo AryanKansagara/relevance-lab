@@ -91,7 +91,7 @@ export function explainTerm(t: TermInput): RawExplanation {
           value: f(tf),
           description: 'tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:',
           details: [
-            { value: t.freq, description: `termFreq=${fr}`, details: [] },
+            { value: t.freq, description: 'freq, occurrences of term within document', details: [] },
             { value: t.k1, description: 'k1, term saturation parameter', details: [] },
             { value: t.b, description: 'b, length normalization parameter', details: [] },
             { value: dl, description: norm > 39 ? 'dl, length of field (approximate)' : 'dl, length of field', details: [] },

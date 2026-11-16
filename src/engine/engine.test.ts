@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { attribute, bm25Score, ExplainParseError, parseNode, parseResponse, verdict, type RawExplanation } from './explain.ts'
 import { bumpColumns, compare, diffTerm, observedParams, replay, sanity } from './replay.ts'
@@ -25,7 +26,7 @@ const ES8: RawExplanation = {
         { value: 5, description: 'N, total number of documents with field', details: [] },
       ] },
       { value: 0.45454544, description: 'tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:', details: [
-        { value: 1, description: 'termFreq=1.0', details: [] },
+        { value: 1, description: 'freq, occurrences of term within document', details: [] },
         { value: 1.2, description: 'k1, term saturation parameter', details: [] },
         { value: 0.75, description: 'b, length normalization parameter', details: [] },
         { value: 1, description: 'dl, length of field', details: [] },
@@ -427,4 +428,70 @@ test('suggestParams raises nDCG, and its result reproduces under replay', () => 
     close(ndcg(replay(hits, out.params).map((r) => r.id), s.judgments, 5), out.after, 1e-9)
     assert.ok(out.changed.length > 0)
   }
+})
+
+// Real responses copied from Elastic's published docs and API spec (see /docs, "Test fixtures").
+const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8')
+
+test('real fixture: ES 8 _explain API example parses and replays exactly', () => {
+  const r = parseResponse(fixture('es-explain-api-8.json'))
+  assert.equal(r.shape, 'explain-api')
+  const h = r.hits[0]
+  assert.deepEqual(h.warnings, [])
+  const t = h.root.bm25!
+  assert.equal(t.field, 'message')
+  assert.equal(t.term, 'elasticsearch')
+  assert.equal(t.queryBoost, 1)
+  assert.equal(t.n, 1)
+  assert.equal(t.N, 5)
+  // Hand check: ln(1 + 4.5 / 1.5) = ln 4; tf = 1 / (1 + 1.2 * (0.25 + 0.75 * 3 / 5.4)) = 1 / 1.8.
+  close(t.idf, Math.log(4), 1e-6)
+  close(bm25Score(t, t.k1, t.b), 2.2 * Math.log(4) / 1.8, 1e-6)
+  close(bm25Score(t, t.k1, t.b), 1.6943598, 1e-6)
+})
+
+test('real fixture: ES 6.8 tfNorm _explain example gives the same score as ES 8', () => {
+  const h = parseResponse(fixture('es-explain-api-6.8.json')).hits[0]
+  assert.deepEqual(h.warnings, [])
+  assert.equal(h.root.bm25!.format, 'tfNorm')
+  assert.equal(h.root.bm25!.dl, 3)
+  close(bm25Score(h.root.bm25!, 1.2, 0.75), 1.6943599, 1e-6)
+})
+
+test('real fixture: RRF explain uses the rank as node value; contributions still sum to the score', () => {
+  const r = parseResponse(fixture('es-rrf-explain.json'))
+  assert.equal(r.shape, 'search')
+  const root = r.hits[0].root
+  assert.equal(root.kind, 'rrf')
+  assert.deepEqual(root.children.map((c) => c.source?.rank), [2, 1])
+  const parts = attribute(root)
+  close(parts.reduce((a, c) => a + c.value, 0), 0.8333334, 1e-6)
+  close(parts[0].value, 1 / 3, 1e-6)
+  close(parts[1].value, 0.5, 1e-6)
+  assert.equal(root.children[1].children[0].kind, 'knn')
+})
+
+test('real fixture: named RRF query in the "in query [name]" form', () => {
+  const root = parseResponse(fixture('es-rrf-explain-named.json')).hits[0].root
+  assert.deepEqual(root.children[1].source, { index: 1, name: 'my_knn_query', rank: 1 })
+  const rec = listsFromHits(parseResponse(fixture('es-rrf-explain.json')).hits)!
+  assert.equal(rec.method, 'rrf')
+  assert.equal(rec.rankConstant, 1)
+  assert.deepEqual(rec.lists.map((l) => l.items[0].rank), [2, 1])
+})
+
+test('script_score with a boost ("Boosted score, product of:") is a product, not an unknown node', () => {
+  const n = parseNode({ value: 4, description: 'Boosted score, product of:', details: [
+    { value: 2, description: 'script score function, computed with script:"Script{lang=\'painless\', source=\'_score * 2\'}"', details: [] },
+    { value: 2, description: 'boost', details: [] },
+  ] })
+  assert.equal(n.kind, 'product')
+  assert.equal(n.warning, undefined)
+})
+
+test('mini index emits the exact ES 8 freq description', () => {
+  const e = explainTerm({ field: 'f', term: 't', docId: 0, freq: 1, n: 1, N: 5, dl: 3, avgdl: 5.4, queryBoost: 1, k1: 1.2, b: 0.75 })
+  const real = JSON.parse(fixture('es-explain-api-8.json')).explanation
+  assert.equal(e.details![0].details![2].details![0].description, real.details[0].details[2].details[0].description)
+  close(e.value, real.value, 1e-6)
 })

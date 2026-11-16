@@ -1,0 +1,29 @@
+{
+    "hits":
+    [
+        {
+            "_index": "example-index",
+            "_id": "3",
+            "_score": 0.8333334,
+            "_explanation":
+            {
+                "value": 0.8333334,
+                "description": "rrf score: [0.8333334] computed for initial ranks [2, 1] with rankConstant: [1] as sum of [1 / (rank + rankConstant)] for each query",
+                "details":
+                [
+                    {
+                        "value": 2,
+                        "description": "rrf score: [0.33333334], for rank [2] in query at index [0] computed as [1 / (2 + 1]), for matching query with score: ",
+                        "details":
+                        []
+                    },
+                    {
+                        "value": 1,
+                        "description": "rrf score: [0.5], for rank [1] in query [my_knn_query] computed as [1 / (1 + 1]), for matching query with score: ",
+                        "details":
+                        []
+                    }
+                ]
+            }
+        }]
+}
