@@ -20,6 +20,10 @@ Explain output is long and nested, and it stops at the numbers. Practitioners st
 - **Mini index**: upload JSON docs and get real BM25 ranking in the browser, including Lucene's norm encoding, with no cluster.
 - **Shareable URLs**: state is compressed into the hash. Nothing is uploaded.
 
+## Tested against real output
+
+`src/engine/fixtures/` holds explain responses copied from Elastic's API spec and docs (ES 8 `_explain`, ES 6.8 `tfNorm`, RRF with and without named queries). Description strings were checked against the Lucene and Elasticsearch classes that emit them. Sources and dates are listed on `/docs`. The workspace samples are synthetic.
+
 ## Run locally
 
 ```sh

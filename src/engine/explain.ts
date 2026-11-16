@@ -326,7 +326,7 @@ export function parseResponse(input: string | unknown): ParsedResponse {
     }
     const total = typeof o.hits.total === 'number' ? o.hits.total : o.hits.total?.value
     const notes: string[] = []
-    if (raw.length < (total ?? 0)) notes.push(`Response has ${raw.length} of ${total} matching docs. Replay can only reorder what was returned; raise "size" to see docs entering from below.`)
+    if (raw.length < (total ?? 0)) notes.push(`Response has ${raw.length} of ${total?.toLocaleString('en-US')} matching docs. Replay can only reorder what was returned; raise "size" to see docs entering from below.`)
     return { shape: 'search', hits: raw.map((h, i) => toHit(h, i)), total, notes }
   }
   if ('matched' in o && ('explanation' in o || o.matched === false)) {

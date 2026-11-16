@@ -543,3 +543,11 @@ textarea:focus { outline: 2px solid var(--accent-ink); outline-offset: -1px; }
 @media (forced-colors: active) {
   .bump path, .sat-line { stroke: CanvasText; }
 }
+.docs { max-width: 820px; }
+.docs h3 { margin: 32px 0 10px; color: var(--ink); }
+.docs dl div { padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.docs dt { font-weight: 600; color: var(--ink); }
+.docs dd { margin: 4px 0 0; }
+.docs ul { padding-left: 20px; }
+.docs-src li { margin-bottom: 10px; overflow-wrap: anywhere; }
+.docs-src span { display: block; font-size: 14px; opacity: .8; }

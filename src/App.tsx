@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import Landing from './Landing.tsx'
+import Docs from './Docs.tsx'
 
 const Tool = lazy(() => import('./Tool.tsx'))
 
@@ -100,7 +101,7 @@ export default function App() {
           <nav className="top-nav" aria-label="Main">
             <a {...link('/#how')}>How it works</a>
             <a {...link('/app?sample=ecommerce')}>Samples</a>
-            <a href="https://www.elastic.co/docs/reference/elasticsearch/rest-apis/search-explain" target="_blank" rel="noreferrer">Explain docs</a>
+            <a {...link('/docs')}>Docs</a>
           </nav>
           <div className="top-end">
             <ThemeToggle />
@@ -113,6 +114,8 @@ export default function App() {
           <Suspense fallback={<div className="page-load"><span className="spin" />Loading the lab</div>}>
             <Tool />
           </Suspense>
+        ) : path === '/docs' ? (
+          <Docs />
         ) : (
           <Landing />
         )}
