@@ -122,7 +122,7 @@ export default function App() {
       </main>
       <footer className="foot">
         <div className="foot-in">
-          <span>Built by Aryan Kansagara. Independent project, not affiliated with Elastic.</span>
+          <span>Built by Aryan Kansagara.</span>
           <span className="foot-note">Everything runs in your browser. Pasted responses never leave this tab.</span>
         </div>
       </footer>
