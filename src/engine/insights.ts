@@ -11,9 +11,15 @@ export function dcg(gains: number[], k: number) {
   return gains.slice(0, k).reduce((a, g, i) => a + (2 ** g - 1) / Math.log2(i + 2), 0)
 }
 
+/** Gains for a ranked list. A document that repeats earns its gain once, at its first position. */
+function gainsOf(ranked: string[], j: Judgments) {
+  const seen = new Set<string>()
+  return ranked.map((id) => (seen.has(id) ? 0 : (seen.add(id), j[id] ?? 0)))
+}
+
 export function ndcg(ranked: string[], j: Judgments, k: number) {
   const ideal = dcg(Object.values(j).filter((g) => g > 0).sort((a, b) => b - a), k)
-  return ideal ? dcg(ranked.map((id) => j[id] ?? 0), k) / ideal : 0
+  return ideal ? dcg(gainsOf(ranked, j), k) / ideal : 0
 }
 
 export function mrr(ranked: string[], j: Judgments) {
@@ -23,7 +29,7 @@ export function mrr(ranked: string[], j: Judgments) {
 
 export function precisionAt(ranked: string[], j: Judgments, k: number) {
   const top = ranked.slice(0, k)
-  return top.length ? top.filter((id) => (j[id] ?? 0) > 0).length / k : 0
+  return top.length ? gainsOf(top, j).filter((g) => g > 0).length / k : 0
 }
 
 export interface Metrics { ndcg: number; mrr: number; precision: number }

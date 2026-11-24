@@ -33,11 +33,13 @@ export function parseList(text: string, name: string): RetrieverList {
     })
   }
   if (!rows.length) throw new ExplainParseError(`The ${name} list has no rows.`)
-  const seen = new Set<string>()
-  const items = rows
-    .sort((a, b) => b.score - a.score)
-    .filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)))
-    .map((r, i) => ({ ...r, rank: i + 1 }))
+  const firstRow = new Map<string, number>()
+  rows.forEach((r, i) => {
+    const first = firstRow.get(r.id)
+    if (first !== undefined) throw new ExplainParseError(`The ${name} list has the id "${r.id}" twice (items ${first + 1} and ${i + 1}).`, 'A document can appear once per list. Nothing was merged: remove or rename the repeat.')
+    firstRow.set(r.id, i)
+  })
+  const items = rows.sort((a, b) => b.score - a.score).map((r, i) => ({ ...r, rank: i + 1 }))
   return { name, items }
 }
 
