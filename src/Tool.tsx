@@ -5,11 +5,10 @@ import { coverage, diagnose, explainWinner, linear, listsFromHits, parseList, rr
 import { lints, metrics, parseAnalyze, parseMapping, SIMILARITY_NOTE, suggestParams, tunedQuery, type Judgments } from './engine/insights.ts'
 import { buildIndex, parseDocs, search, type Analyzer } from './engine/miniindex.ts'
 import { decodeState, encodeState } from './engine/share.ts'
+import { checkSharedState, isSample, isTab, readLabParams, type Tab } from './engine/params.ts'
 import { HERO_CORPUS, SAMPLES } from './engine/samples.ts'
 import { SearchIcon } from './icons.tsx'
 import { BumpChart, ExplainTree, RrfFlow, SaturationChart, ScoreStrip, Waterfall } from './charts.tsx'
-
-type Tab = 'explain' | 'compare' | 'tune' | 'hybrid' | 'lints' | 'mini'
 
 interface HybridState { method: 'rrf' | 'linear'; rankConstant: number; window: number; alpha: number; normalizer: Normalizer }
 interface MiniState { docs: string; query: string; boosts: Record<string, number>; analyzer: Analyzer; type: 'best_fields' | 'most_fields'; k1: number; b: number }
@@ -46,36 +45,42 @@ function fromSample(id: string, prev: Workspace): Workspace {
   }
 }
 
-function loadInitial(): Workspace {
-  const q = new URLSearchParams(location.search)
+function loadInitial(): { ws: Workspace; notice: string } {
+  const q = readLabParams(location.search)
   let ws = blank
   try {
     const saved = localStorage.getItem(KEY)
     if (saved) ws = { ...blank, ...JSON.parse(saved) }
   } catch { /* corrupted storage falls back to a clean workspace */ }
-  const sample = q.get('sample')
-  if (sample) ws = fromSample(sample, ws)
-  const tab = q.get('tab') as Tab | null
-  if (tab) ws = { ...ws, tab }
-  return ws
+  // A tab or sample name that no longer exists in saved state is repaired rather than kept.
+  if (!isTab(ws.tab)) ws = { ...ws, tab: blank.tab }
+  if (ws.sample !== undefined && !isSample(ws.sample)) ws = { ...ws, sample: undefined }
+  if (q.sample) ws = fromSample(q.sample, ws)
+  if (q.tab) ws = { ...ws, tab: q.tab }
+  return { ws, notice: q.problems.join(' ') }
 }
 
 const SHARE_KEYS: (keyof Workspace)[] = ['params', 'judgments', 'hybrid', 'tab']
 
 export default function Tool() {
-  const [ws, setWs] = useState<Workspace>(loadInitial)
+  const [initial] = useState(loadInitial)
+  const [ws, setWs] = useState<Workspace>(initial.ws)
   const [dataOpen, setDataOpen] = useState(false)
-  const [toast, setToast] = useState('')
+  const [toast, setToast] = useState(initial.notice)
   const patch = useCallback((p: Partial<Workspace>) => setWs((w) => ({ ...w, ...p })), [])
 
   useEffect(() => {
     const h = location.hash.match(/^#s=(.+)$/)
     if (!h) return
     decodeState<Partial<Workspace>>(h[1])
-      .then((state) => setWs((w) => {
-        const base = state.sample ? fromSample(state.sample, w) : w
-        return { ...base, ...state }
-      }))
+      .then((decoded) => {
+        const { state, problems } = checkSharedState(decoded)
+        if (problems.length) setToast(problems.join(' '))
+        setWs((w) => {
+          const base = state.sample ? fromSample(state.sample, w) : w
+          return { ...base, ...state }
+        })
+      })
       .catch(() => setToast('That share link is damaged and could not be opened.'))
   }, [])
   useEffect(() => {
