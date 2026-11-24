@@ -463,15 +463,27 @@ test.describe('share links', () => {
     await ctx.close()
   })
 
-  // BUG (see docs in the PR): decodeState leaves the writer.close() rejection unhandled, so a damaged link
-  // also raises an uncaught "Compressed input was truncated." page error. The visible behaviour is correct.
-  test.use({ knownPageErrors: [/Compressed input was truncated/] })
-  test('a damaged share link says so and does not load a workspace', async ({ page }) => {
-    await page.goto('/app#s=AAAA')
-    await expect(page.getByRole('status')).toContainText('That share link is damaged')
-    await expect(page.locator('.metric')).toHaveCount(0)
-    await expect(page.locator('.hit')).toHaveCount(0)
-  })
+  // Each link is damaged in a different way. All must show the same message and raise no page error
+  // (the fixture fails the test on any uncaught error or console error).
+  const damaged: [string, string][] = [
+    ['valid base64url that is not deflate data', 'AAAA'],
+    ['too short to be deflate data', 'abc'],
+    ['corrupt deflate blocks', 'AAAAAAAAAAAAAAAA'],
+    ['not base64', '%%%'],
+    ['deflated text that is not JSON', 'y8svUcgqzs8DAA'],
+    ['deflated JSON null', 'yyvNyQEA'],
+    ['deflated JSON number', 'MzECAA'],
+    ['a real link cut short', 'q1YqTswtyElVslJKTc7PzU0tSk5V0lEqSUxSslIqKc1LVa'],
+  ]
+  for (const [name, hash] of damaged) {
+    test(`a damaged share link (${name}) says so, raises no error and does not load a workspace`, async ({ page }) => {
+      await page.goto(`/app#s=${hash}`)
+      await expect(page.getByRole('status')).toContainText('That share link is damaged')
+      await expect(page.locator('.metric')).toHaveCount(0)
+      await expect(page.locator('.hit')).toHaveCount(0)
+      await expect(page.getByRole('heading', { name: /Show me a response with/ })).toBeVisible()
+    })
+  }
 })
 
 // ---- site -------------------------------------------------------------------------------
