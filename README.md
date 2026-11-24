@@ -32,3 +32,15 @@ npm run dev
 npm test
 npm run build
 ```
+
+## End-to-end tests
+
+Playwright (Chromium) drives the production build through `vite preview`. External hosts are blocked, so the suite runs signed out and offline, and any uncaught page error fails the test.
+
+```sh
+npx playwright install chromium   # once
+npm run test:e2e                  # builds, serves dist on port 4173, runs e2e/
+E2E_PORT=4300 npm run test:e2e    # pick another port
+```
+
+The suite never reuses a running server, so it always tests the build it just made. GitHub Actions (`.github/workflows/ci.yml`, job `test`) runs install, build, unit tests and E2E on every pull request and on pushes to `main`. Vercel only deploys `main` (see `vercel.json`).
