@@ -246,6 +246,91 @@ test.describe('mini index', () => {
   })
 })
 
+// ---- duplicate document ids -------------------------------------------------------------
+
+test.describe('duplicate document ids', () => {
+  const docs: Doc[] = [
+    { id: 'd1', text: 'alpha' },
+    { id: 'd2', text: 'alpha beta gamma' },
+    { id: 'd3', text: 'alpha beta' },
+  ]
+
+  test('the mini index refuses two documents with one id, names them, and shows no ranking', async ({ page }) => {
+    await miniSearch(page, [{ id: 'a', title: 'first', text: 'alpha' }, { id: 'a', title: 'second', text: 'alpha beta gamma' }], 'alpha')
+    await expect(page.getByRole('alert')).toContainText('Documents 1 and 2 have the same id "a"')
+    await expect(page.getByRole('alert')).toContainText('Nothing was indexed')
+    await expect(miniResults(page)).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Open these results in the lab' })).toHaveCount(0)
+    // Fixing the ids brings the ranking back.
+    await miniDocs(page).fill(JSON.stringify([{ id: 'a', title: 'first', text: 'alpha' }, { id: 'b', title: 'second', text: 'alpha beta gamma' }]))
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    expect(await titles(page)).toEqual(['first', 'second'])
+  })
+
+  /** Real search response from the mini index, with the hit fields edited by `edit`, pasted as a file. */
+  async function openEdited(page: Page, edit: (hits: Record<string, unknown>[]) => void) {
+    await miniSearch(page, docs, 'alpha')
+    await page.getByRole('button', { name: 'Open these results in the lab' }).click()
+    await expect.poll(() => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? '{}').response?.includes('_explanation') ?? false, STORAGE_KEY)).toBe(true)
+    const response = JSON.parse(await page.evaluate((k) => JSON.parse(localStorage.getItem(k)!).response as string, STORAGE_KEY))
+    edit(response.hits.hits)
+    await openDialog(page)
+    await page.getByRole('dialog').locator('input[type=file]').setInputFiles({ name: 'two-indices.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(response)) })
+    await page.getByRole('button', { name: 'Analyze' }).click()
+  }
+
+  test('hits that share an _id across indices are labelled and judged separately, and nDCG stays at or below 1', async ({ page }) => {
+    await openEdited(page, (hits) => {
+      hits[0]._index = 'logs-a'
+      hits[0]._id = 'a'
+      hits[1]._index = 'logs-b'
+      hits[1]._id = 'a'
+    })
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await expect(page.locator('.pill')).toHaveText('3 hits of 3')
+    await expect(page.locator('.note')).toContainText('Hits from different indices share an _id ("a")')
+    await expect(page.locator('.note')).toContainText('judged separately')
+    await page.getByRole('tab', { name: 'Tune' }).click()
+    const rows = resultRows(page)
+    expect(await rowIds(rows)).toEqual(['logs-a/a', 'logs-b/a', 'd2'])
+
+    // Judge only the first. With one judged document the ideal list is that document alone, so nDCG is exactly 1.
+    // (When both rows shared the id, it was counted twice: 1 + 1/log2(3) = 1.631.)
+    await rows.nth(0).getByRole('button', { name: 'Rel' }).click()
+    await expect(rows.nth(0).getByRole('button', { name: 'Rel' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(rows.nth(1).getByRole('button', { name: 'Rel' })).toHaveAttribute('aria-pressed', 'false')
+    await expect(metricValue(page, 'nDCG@5')).toHaveText('1.000')
+    await expect(metricValue(page, 'MRR')).toHaveText('1.000')
+    await expect(metricValue(page, 'P@5')).toHaveText('0.200')
+
+    // Judging the second counts it once: gains 1,1,0 against ideal 1,1.
+    await rows.nth(1).getByRole('button', { name: 'Rel' }).click()
+    await expect(metricValue(page, 'nDCG@5')).toHaveText('1.000')
+    await expect(metricValue(page, 'P@5')).toHaveText('0.400')
+
+    // Now mark the first No and the third (d2) Rel. Judged: logs-b/a and d2. Gains 0,1,1 against ideal 1,1:
+    // DCG = 1/log2(3) + 1/log2(4) = 1.1309, IDCG = 1 + 1/log2(3) = 1.6309, so nDCG = 0.6934.
+    await rows.nth(0).getByRole('button', { name: 'No' }).click()
+    await rows.nth(2).getByRole('button', { name: 'Rel' }).click()
+    await expect(metricValue(page, 'nDCG@5')).toHaveText('0.693')
+  })
+
+  test('hits with the same index and _id are refused with their positions and nothing is scored', async ({ page }) => {
+    await openEdited(page, (hits) => {
+      hits[0]._index = 'logs-a'
+      hits[0]._id = 'a'
+      hits[1]._index = 'logs-a'
+      hits[1]._id = 'a'
+    })
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await expect(page.getByRole('alert').filter({ hasText: 'Hits 1 and 2 have the same _id "a" in index "logs-a"' })).toBeVisible()
+    await expect(page.locator('.err-card')).toContainText('Nothing was guessed')
+    await expect(page.locator('.pill')).toHaveCount(0)
+    await expect(page.locator('.metric')).toHaveCount(0)
+    await expect(page.getByRole('tab', { name: 'Tune' })).toBeDisabled()
+  })
+})
+
 // ---- judgments: never invented ----------------------------------------------------------
 
 test.describe('judgments', () => {
@@ -464,15 +549,27 @@ test.describe('share links', () => {
     await ctx.close()
   })
 
-  // BUG (see docs in the PR): decodeState leaves the writer.close() rejection unhandled, so a damaged link
-  // also raises an uncaught "Compressed input was truncated." page error. The visible behaviour is correct.
-  test.use({ knownPageErrors: [/Compressed input was truncated/] })
-  test('a damaged share link says so and does not load a workspace', async ({ page }) => {
-    await page.goto('/app#s=AAAA')
-    await expect(page.getByRole('status')).toContainText('That share link is damaged')
-    await expect(page.locator('.metric')).toHaveCount(0)
-    await expect(page.locator('.hit')).toHaveCount(0)
-  })
+  // Each link is damaged in a different way. All must show the same message and raise no page error
+  // (the fixture fails the test on any uncaught error or console error).
+  const damaged: [string, string][] = [
+    ['valid base64url that is not deflate data', 'AAAA'],
+    ['too short to be deflate data', 'abc'],
+    ['corrupt deflate blocks', 'AAAAAAAAAAAAAAAA'],
+    ['not base64', '%%%'],
+    ['deflated text that is not JSON', 'y8svUcgqzs8DAA'],
+    ['deflated JSON null', 'yyvNyQEA'],
+    ['deflated JSON number', 'MzECAA'],
+    ['a real link cut short', 'q1YqTswtyElVslJKTc7PzU0tSk5V0lEqSUxSslIqKc1LVa'],
+  ]
+  for (const [name, hash] of damaged) {
+    test(`a damaged share link (${name}) says so, raises no error and does not load a workspace`, async ({ page }) => {
+      await page.goto(`/app#s=${hash}`)
+      await expect(page.getByRole('status')).toContainText('That share link is damaged')
+      await expect(page.locator('.metric')).toHaveCount(0)
+      await expect(page.locator('.hit')).toHaveCount(0)
+      await expect(page.getByRole('heading', { name: /Show me a response with/ })).toBeVisible()
+    })
+  }
 })
 
 // ---- unknown query values ---------------------------------------------------------------

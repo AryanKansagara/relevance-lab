@@ -292,6 +292,36 @@ function toHit(h: RawHit, i: number): Hit {
   return { id, index: h._index, shard: h._shard, score, source: h._source, root, warnings, rank: i + 1 }
 }
 
+/**
+ * Judgments, metrics and replay identify a hit by its id, so ids must be unique. Hits that share an _id but come
+ * from different indices are labelled "index/_id" (and the response says so). Any other repeat is refused.
+ */
+function uniqueIds(hits: Hit[], notes: string[]): Hit[] {
+  const count = new Map<string, number>()
+  for (const h of hits) count.set(h.id, (count.get(h.id) ?? 0) + 1)
+  const repeated = [...count].filter(([, n]) => n > 1).map(([id]) => id)
+  if (!repeated.length) return hits
+  const labelled = hits.map((h) => (count.get(h.id)! > 1 && h.index != null ? { ...h, id: `${h.index}/${h.id}` } : h))
+  const seen = new Map<string, number>()
+  for (const [i, h] of labelled.entries()) {
+    const first = seen.get(h.id)
+    if (first !== undefined) {
+      const was = hits[first]
+      const same = was.id === hits[i].id && was.index === h.index
+      throw new ExplainParseError(
+        same
+          ? `Hits ${first + 1} and ${i + 1} have the same _id "${was.id}"${h.index != null ? ` in index "${h.index}"` : ''}.`
+          : `Hits ${first + 1} and ${i + 1} would both be identified as "${h.id}" once repeated ids are prefixed with their index.`,
+        'Judgments and metrics identify a document by its id, so a repeated id would be judged together and counted twice. Nothing was guessed: make the ids unique, or paste hits from one index.',
+      )
+    }
+    seen.set(h.id, i)
+  }
+  const shown = repeated.slice(0, 3).map((id) => `"${id}"`).join(', ') + (repeated.length > 3 ? `, and ${repeated.length - 3} more` : '')
+  notes.push(`Hits from different indices share an _id (${shown}). Those documents are labelled index/_id, so each is judged separately.`)
+  return labelled
+}
+
 export function parseResponse(input: string | unknown): ParsedResponse {
   let json: unknown = input
   if (typeof input === 'string') {
@@ -305,7 +335,8 @@ export function parseResponse(input: string | unknown): ParsedResponse {
   }
   if (Array.isArray(json)) {
     if (!json.length) throw new ExplainParseError('The array is empty.')
-    return { shape: 'hit-array', hits: json.map((h, i) => toHit(h as RawHit, i)), notes: [] }
+    const notes: string[] = []
+    return { shape: 'hit-array', hits: uniqueIds(json.map((h, i) => toHit(h as RawHit, i)), notes), notes }
   }
   if (json == null || typeof json !== 'object') throw new ExplainParseError('Expected a JSON object from Elasticsearch.')
   const o = json as Record<string, any>
@@ -327,7 +358,7 @@ export function parseResponse(input: string | unknown): ParsedResponse {
     const total = typeof o.hits.total === 'number' ? o.hits.total : o.hits.total?.value
     const notes: string[] = []
     if (raw.length < (total ?? 0)) notes.push(`Response has ${raw.length} of ${total?.toLocaleString('en-US')} matching docs. Replay can only reorder what was returned; raise "size" to see docs entering from below.`)
-    return { shape: 'search', hits: raw.map((h, i) => toHit(h, i)), total, notes }
+    return { shape: 'search', hits: uniqueIds(raw.map((h, i) => toHit(h, i)), notes), total, notes }
   }
   if ('matched' in o && ('explanation' in o || o.matched === false)) {
     if (!o.matched) throw new ExplainParseError(`_explain says document "${o._id}" does not match.`, o.explanation?.description ? `Reason: ${o.explanation.description}` : 'No score to analyze.')

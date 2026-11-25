@@ -1,6 +1,7 @@
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
+import { deflateRawSync } from 'node:zlib'
 import { attribute, bm25Score, ExplainParseError, parseNode, parseResponse, verdict, type RawExplanation } from './explain.ts'
 import { bumpColumns, compare, diffTerm, observedParams, replay, sanity } from './replay.ts'
 import { coverage, diagnose, distribution, linear, listsFromHits, normalize, parseList, rrf } from './hybrid.ts'
@@ -474,6 +475,38 @@ test('share state round-trips through the URL hash', async () => {
   assert.deepEqual(await decodeState(encoded), state)
 })
 
+test('damaged share links are rejected with one error and no unhandled rejection', async () => {
+  const unhandled: unknown[] = []
+  const onUnhandled = (e: unknown) => unhandled.push(e)
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const deflated = (text: string) => deflateRawSync(Buffer.from(text)).toString('base64url')
+    const valid = deflated(JSON.stringify({ tab: 'tune', params: { k1: 0.9 } }))
+    const damaged = [
+      'AAAA', // valid base64url, not valid deflate data (truncated)
+      'abc',
+      'AAAAAAAAAAAAAAAA', // invalid stored block lengths
+      'eJwDAAAAAAE',
+      'e30', // base64 of "{}", which is not deflate data
+      '%%%', // not base64 at all
+      '', // empty
+      valid.slice(0, -4), // a real link cut short
+      deflated('not json'),
+      deflated('null'), // valid JSON that is not a workspace
+      deflated('42'),
+      deflated('"text"'),
+      deflated('[1,2]'),
+    ]
+    for (const hash of damaged) await assert.rejects(decodeState(hash), Error, `should reject ${JSON.stringify(hash)}`)
+    assert.deepEqual(await decodeState(valid), { tab: 'tune', params: { k1: 0.9 } })
+    // Rejections from the writable side surface on a later tick, so give them a chance to fire.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.deepEqual(unhandled, [])
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+})
+
 test('suggestParams raises nDCG, and its result reproduces under replay', () => {
   for (const s of [SAMPLES[0], SAMPLES[2]]) {
     const { hits } = parseResponse(s.response)
@@ -548,4 +581,93 @@ test('mini index emits the exact ES 8 freq description', () => {
   const real = JSON.parse(fixture('es-explain-api-8.json')).explanation
   assert.equal(e.details![0].details![2].details![0].description, real.details[0].details[2].details[0].description)
   close(e.value, real.value, 1e-6)
+})
+
+// ---- duplicate document ids ----------------------------------------------------------
+
+test('mini index refuses duplicate document ids and names the documents', () => {
+  assert.throws(
+    () => buildIndex([{ id: 'a', title: 'first', text: 'alpha' }, { id: 'a', title: 'second', text: 'alpha beta gamma' }]),
+    /Documents 1 and 2 have the same id "a"\. Give every document a unique "id" or "_id"\. Nothing was indexed\./,
+  )
+  // _id and id are the same identity, and the second spelling counts too.
+  assert.throws(() => buildIndex([{ _id: 'x', text: 'one' }, { text: 'two' }, { id: 'x', text: 'three' }]), /Documents 1 and 3 have the same id "x"/)
+  // Numeric and string ids that print the same are the same id.
+  assert.throws(() => buildIndex([{ id: 7, text: 'one' }, { id: '7', text: 'two' }]), /same id "7"/)
+  // A document without an id is numbered by position, which can collide with an explicit id.
+  assert.throws(() => buildIndex([{ text: 'no id' }, { id: '1', text: 'explicit' }]), /Documents 1 and 2 have the same id "1" \(no id, so it was numbered 1\)/)
+  // Unique ids, including automatic numbering, still index.
+  assert.equal(buildIndex([{ text: 'a' }, { id: 'b', text: 'b' }, { text: 'c' }]).docs.map((d) => d.id).join(), '1,b,3')
+})
+
+test('nDCG can never exceed 1, even when a ranked list repeats a document', () => {
+  // The case from the bug report: one judged document counted twice used to give 1.631.
+  close(ndcg(['a', 'a'], { a: 1 }, 5), 1, 1e-12)
+  assert.equal(precisionAt(['a', 'a'], { a: 1 }, 5), 0.2)
+  assert.equal(mrr(['a', 'a'], { a: 1 }), 1)
+  // A repeat earns nothing, so it cannot lift a list above its ideal ordering.
+  close(ndcg(['b', 'a', 'a', 'a'], { a: 2, b: 1 }, 4), dcg([1, 2], 4) / dcg([2, 1], 4), 1e-12)
+  // Randomised: ranked lists drawn with repeats from judged and unjudged ids never score above 1.
+  let seed = 12345
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) % 2 ** 32) / 2 ** 32
+  const ids = 'abcdefgh'.split('')
+  for (let n = 0; n < 5000; n++) {
+    const j = Object.fromEntries(ids.filter(() => rnd() < 0.6).map((id) => [id, Math.floor(rnd() * 4)]))
+    const ranked = Array.from({ length: 1 + Math.floor(rnd() * 12) }, () => ids[Math.floor(rnd() * ids.length)])
+    for (const k of [1, 3, 5, 10]) {
+      const v = ndcg(ranked, j, k)
+      assert.ok(v >= 0 && v <= 1, `ndcg ${v} for ${ranked} ${JSON.stringify(j)} @${k}`)
+      const p = precisionAt(ranked, j, k)
+      assert.ok(p >= 0 && p <= 1, `precision ${p} for ${ranked} ${JSON.stringify(j)} @${k}`)
+    }
+  }
+})
+
+test('responses whose hits repeat an _id: label by index, or refuse, never merge', () => {
+  const ix = buildIndex([{ id: 'd1', text: 'alpha' }, { id: 'd2', text: 'alpha beta gamma' }, { id: 'd3', text: 'alpha beta' }])
+  const response = () => JSON.parse(JSON.stringify(search(ix, { query: 'alpha', fields: { text: 1 } })))
+  const ids = (r: ReturnType<typeof parseResponse>) => r.hits.map((h) => h.id)
+
+  const unique = parseResponse(response())
+  assert.deepEqual(unique.notes, [])
+  assert.deepEqual(ids(unique), ['d1', 'd3', 'd2'])
+
+  // Same _id in two indices is two documents: both stay, each labelled, and the response says so.
+  const twoIndices = response()
+  twoIndices.hits.hits.forEach((h: any, i: number) => { h._index = i === 1 ? 'logs-b' : 'logs-a'; if (i < 2) h._id = 'a' })
+  const labelled = parseResponse(twoIndices)
+  assert.deepEqual(ids(labelled), ['logs-a/a', 'logs-b/a', 'd2'])
+  assert.equal(labelled.notes.length, 1)
+  assert.match(labelled.notes[0], /share an _id \("a"\).*labelled index\/_id.*judged separately/)
+  // Judging one no longer judges the other, and nothing exceeds 1.
+  const j = { 'logs-a/a': 1 }
+  const m = metrics(ids(labelled), j, 5)
+  assert.ok(m.ndcg <= 1)
+  assert.equal(m.ndcg, 1)
+  assert.equal(m.precision, 0.2)
+  assert.equal(ids(labelled).filter((id) => (j as Record<string, number>)[id]).length, 1)
+
+  // The same index and _id twice is ambiguous: refused, with the positions.
+  const sameIndex = response()
+  sameIndex.hits.hits.forEach((h: any) => { h._index = 'logs-a'; h._id = 'a' })
+  assert.throws(() => parseResponse(sameIndex), (e: any) => e instanceof ExplainParseError && /Hits 1 and 2 have the same _id "a" in index "logs-a"\./.test(e.message) && /Nothing was guessed/.test(e.hint ?? ''))
+
+  // Without an index there is nothing to tell them apart: refused.
+  const noIndex = response()
+  noIndex.hits.hits.forEach((h: any) => { delete h._index; h._id = 'a' })
+  assert.throws(() => parseResponse(noIndex), /Hits 1 and 2 have the same _id "a"\./)
+
+  // A bare array of hits goes through the same check.
+  assert.throws(() => parseResponse(noIndex.hits.hits), /have the same _id "a"/)
+  // Prefixing must not itself create a collision: "a/z" already exists as a real id.
+  const clash = response()
+  clash.hits.hits.forEach((h: any, i: number) => { h._index = ['a', 'b', 'c'][i]; h._id = i < 2 ? 'z' : 'a/z' })
+  assert.throws(() => parseResponse(clash), /Hits 1 and 3 would both be identified as "a\/z"/)
+  assert.deepEqual(ids(parseResponse(twoIndices.hits.hits)), ['logs-a/a', 'logs-b/a', 'd2'])
+})
+
+test('a retriever list that repeats an id is refused instead of silently keeping one row', () => {
+  assert.throws(() => parseList('a 9\nb 8\na 3', 'keyword'), /keyword list has the id "a" twice \(items 1 and 3\)/)
+  assert.throws(() => parseList('[{"_id":"x","_score":1},{"_id":"x","_score":2}]', 'vector'), /vector list has the id "x" twice/)
+  assert.deepEqual(parseList('a 9\nb 8', 'keyword').items.map((i) => i.id), ['a', 'b'])
 })
