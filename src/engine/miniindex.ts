@@ -148,6 +148,16 @@ export function buildIndex(sources: Record<string, unknown>[], analyzer: Analyze
     }
     return { id: String(s._id ?? s.id ?? i + 1), source: s, fields }
   })
+  // Judgments, hit selection and metrics identify a document by its id, so two documents with one id would be
+  // judged together and counted twice. Refuse instead of guessing which one to keep.
+  const firstWith = new Map<string, number>()
+  docs.forEach((d, i) => {
+    const first = firstWith.get(d.id)
+    if (first === undefined) return void firstWith.set(d.id, i)
+    const has = (n: number) => sources[n]._id != null || sources[n].id != null
+    const auto = (n: number) => (has(n) ? '' : ` (no id, so it was numbered ${n + 1})`)
+    throw new Error(`Documents ${first + 1} and ${i + 1} have the same id "${d.id}"${auto(first)}${auto(i)}. Give every document a unique "id" or "_id". Nothing was indexed.`)
+  })
   const stats: MiniIndex['stats'] = {}
   for (const name of fieldSet) stats[name] = { docCount: 0, sumDl: 0, df: new Map() }
   for (const d of docs) {
