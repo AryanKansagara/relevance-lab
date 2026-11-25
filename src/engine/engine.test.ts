@@ -8,6 +8,7 @@ import { coverage, diagnose, distribution, linear, listsFromHits, normalize, par
 import { dcg, lints, metrics, mrr, ndcg, parseAnalyze, parseMapping, precisionAt, suggestParams, tunedQuery } from './insights.ts'
 import { analyze, buildIndex, decodeNorm, encodeNorm, explainTerm, parseDocs, search } from './miniindex.ts'
 import { decodeState, encodeState } from './share.ts'
+import { checkSharedState, isSample, isTab, readLabParams, TABS } from './params.ts'
 import { HERO_CORPUS, SAMPLES } from './samples.ts'
 
 const close = (a: number, b: number, tol = 1e-3) => assert.ok(Math.abs(a - b) <= tol, `${a} !~ ${b}`)
@@ -314,6 +315,59 @@ test('parseList errors are specific', () => {
   assert.throws(() => parseList('a nope', 'kw'), /line 1/)
   assert.throws(() => parseList('{"foo":1}', 'kw'), /no hits/)
   assert.throws(() => parseList('', 'kw'), /empty/)
+})
+
+test('unknown ?sample= and ?tab= values are dropped and reported, known ones pass', () => {
+  assert.deepEqual(readLabParams(''), { problems: [] })
+  assert.deepEqual(readLabParams('?sample=ecommerce&tab=tune'), { sample: 'ecommerce', tab: 'tune', problems: [] })
+  for (const tab of TABS) assert.equal(readLabParams(`?tab=${tab}`).tab, tab)
+  for (const s of SAMPLES) assert.equal(readLabParams(`?sample=${s.id}`).sample, s.id)
+
+  const bad = readLabParams('?sample=nope&tab=bogus')
+  assert.equal(bad.sample, undefined)
+  assert.equal(bad.tab, undefined)
+  assert.deepEqual(bad.problems, ['Unknown sample "nope", so it was ignored.', 'Unknown tab "bogus", so it was ignored.'])
+  // One bad value does not discard the other.
+  assert.deepEqual(readLabParams('?sample=ecommerce&tab=bogus'), { sample: 'ecommerce', problems: ['Unknown tab "bogus", so it was ignored.'] })
+  assert.deepEqual(readLabParams('?sample=nope&tab=lints'), { tab: 'lints', problems: ['Unknown sample "nope", so it was ignored.'] })
+
+  // Case and surrounding spaces do not matter, so a hand-typed link still works.
+  for (const v of ['Tune', 'TUNE', ' tune', 'tune ', '\ttune\n']) assert.deepEqual(readLabParams('?tab=' + encodeURIComponent(v)), { tab: 'tune', problems: [] }, `tab ${JSON.stringify(v)}`)
+  assert.equal(readLabParams('?sample=ECOMMERCE').sample, 'ecommerce')
+  assert.equal(readLabParams('?sample=%20docs-rrf%20').sample, 'docs-rrf')
+  // Anything else is unknown, including prototype keys, lists and odd text.
+  for (const v of ['tune,compare', 'tu ne', '__proto__', 'constructor', 'toString', 'hasOwnProperty', '0', '%00', '../app', 'tune/', 'tünе']) {
+    assert.equal(readLabParams('?tab=' + encodeURIComponent(v)).tab, undefined, `tab ${v}`)
+    assert.equal(readLabParams('?sample=' + encodeURIComponent(v)).sample, undefined, `sample ${v}`)
+    assert.equal(readLabParams('?tab=' + encodeURIComponent(v)).problems.length, 1)
+  }
+  // A value that is only spaces is unknown, not absent.
+  assert.equal(readLabParams('?tab=%20').problems.length, 1)
+  // An empty value is the same as no value. With a repeated key the first one is used.
+  assert.deepEqual(readLabParams('?sample=&tab='), { problems: [] })
+  assert.equal(readLabParams('?tab=lints&tab=tune').tab, 'lints')
+  assert.equal(readLabParams('?tab=bogus&tab=tune').tab, undefined)
+  // Long values are shortened in the message.
+  assert.match(readLabParams('?tab=' + 'x'.repeat(500)).problems[0], /^Unknown tab "x{40}…", so it was ignored\.$/)
+  assert.ok(isTab('mini') && !isTab('bogus') && !isTab(undefined) && !isTab(3) && !isTab(['tune']))
+  assert.ok(isSample('docs-rrf') && !isSample('nope') && !isSample(undefined) && !isSample('__proto__'))
+})
+
+test('a shared link naming an unknown tab or sample is repaired and reported', () => {
+  assert.deepEqual(checkSharedState({ sample: 'ecommerce', tab: 'tune', params: { k1: 1 } }), { state: { sample: 'ecommerce', tab: 'tune', params: { k1: 1 } }, problems: [] })
+  assert.deepEqual(checkSharedState({ params: {} }), { state: { params: {} }, problems: [] })
+  const a = checkSharedState({ sample: 'ecommerce', tab: 'bogus', params: { k1: 1 } })
+  assert.deepEqual(a.state, { sample: 'ecommerce', params: { k1: 1 } })
+  assert.deepEqual(a.problems, ['This share link names an unknown tab "bogus", so it was ignored.'])
+  const b = checkSharedState({ sample: 'nope', tab: 7 })
+  assert.deepEqual(b.state, {})
+  assert.equal(b.problems.length, 2)
+  assert.match(b.problems[0], /unknown sample "nope"/)
+  assert.match(b.problems[1], /unknown tab "7"/)
+  // The input object is not changed.
+  const input = { sample: 'nope' }
+  checkSharedState(input)
+  assert.deepEqual(input, { sample: 'nope' })
 })
 
 test('metrics: nDCG, MRR and precision', () => {

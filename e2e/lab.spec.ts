@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { deflateRawSync } from 'node:zlib'
 import { expect, STORAGE_KEY, test } from './fixtures.ts'
 import type { Locator, Page } from '@playwright/test'
 
@@ -569,6 +570,106 @@ test.describe('share links', () => {
       await expect(page.getByRole('heading', { name: /Show me a response with/ })).toBeVisible()
     })
   }
+})
+
+// ---- unknown query values ---------------------------------------------------------------
+
+test.describe('unknown ?sample= and ?tab= values', () => {
+  const tabs = (page: Page) => page.getByRole('tab')
+  const selected = (page: Page) => page.locator('[role=tab][aria-selected=true]')
+  const toast = (page: Page) => page.locator('.toast')
+
+  test('an unknown tab is ignored and reported, and the sample opens on a real tab', async ({ page }) => {
+    await page.goto('/app?sample=ecommerce&tab=bogus')
+    await expect(toast(page)).toContainText('Unknown tab "bogus", so it was ignored.')
+    await expect(selected(page)).toHaveCount(1)
+    await expect(page.getByRole('tab', { name: 'Explain' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.hit').first()).toContainText('Sony 3.5mm Audio Cable')
+    await expect(page.locator('.verdict h2')).toBeVisible()
+
+    // The bad value was not saved: a reload with no query lands on the same real tab.
+    await waitForSaved(page, '"tab":"explain"')
+    await page.goto('/app')
+    await expect(page.getByRole('tab', { name: 'Explain' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.locator('.hit').first()).toBeVisible()
+  })
+
+  test('an unknown tab keeps the tab the saved workspace had', async ({ page }) => {
+    await page.goto('/app?sample=ecommerce&tab=tune')
+    await waitForSaved(page, '"tab":"tune"')
+    await page.goto('/app?tab=bogus')
+    await expect(toast(page)).toContainText('Unknown tab "bogus"')
+    await expect(page.getByRole('tab', { name: 'Tune' })).toHaveAttribute('aria-selected', 'true')
+    await expect(metricValue(page, 'nDCG@5')).toHaveText('0.221')
+  })
+
+  test('an unknown sample is reported and nothing else is loaded in its place', async ({ page }) => {
+    await page.goto('/app?sample=nope')
+    await expect(toast(page)).toContainText('Unknown sample "nope", so it was ignored.')
+    await expect(page.locator('.pill')).toHaveCount(0)
+    await expect(page.locator('.hit')).toHaveCount(0)
+    await expect(page.getByLabel('Load a sample')).toHaveValue('')
+    await expect(page.getByRole('heading', { name: /Show me a response with/ })).toBeVisible()
+    await expect(selected(page)).toHaveCount(1)
+  })
+
+  test('an unknown sample leaves the saved workspace as it was', async ({ page }) => {
+    await page.goto('/app?sample=field-dominance&tab=tune')
+    await waitForSaved(page, '"sample":"field-dominance"')
+    const pill = await page.locator('.pill').innerText()
+    await page.goto('/app?sample=nope')
+    await expect(toast(page)).toContainText('Unknown sample "nope"')
+    await expect(page.getByLabel('Load a sample')).toHaveValue('field-dominance')
+    await expect(page.locator('.pill')).toHaveText(pill)
+    await expect(page.getByRole('tab', { name: 'Tune' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  test('both unknown at once are both reported', async ({ page }) => {
+    await page.goto('/app?sample=nope&tab=bogus')
+    await expect(toast(page)).toContainText('Unknown sample "nope", so it was ignored.')
+    await expect(toast(page)).toContainText('Unknown tab "bogus", so it was ignored.')
+    await expect(selected(page)).toHaveCount(1)
+  })
+
+  test('known values still work with no message', async ({ page }) => {
+    await page.goto('/app?sample=docs-rrf&tab=lints')
+    await expect(page.getByRole('tab', { name: 'Lints' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByLabel('Load a sample')).toHaveValue('docs-rrf')
+    await expect(toast(page)).toHaveText('')
+    await expect(tabs(page)).toHaveCount(6)
+  })
+
+  test('case and surrounding spaces in the query do not matter', async ({ page }) => {
+    await page.goto('/app?sample=ECOMMERCE&tab=%20Tune')
+    await expect(page.getByRole('tab', { name: 'Tune' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByLabel('Load a sample')).toHaveValue('ecommerce')
+    await expect(toast(page)).toHaveText('')
+  })
+
+  test('a saved workspace that already holds an unknown tab or sample is repaired on load', async ({ page }) => {
+    await page.addInitScript((k) => localStorage.setItem(k, JSON.stringify({ tab: 'bogus', sample: 'gone' })), STORAGE_KEY)
+    await page.goto('/app')
+    await expect(selected(page)).toHaveCount(1)
+    await expect(page.getByRole('tab', { name: 'Explain' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByLabel('Load a sample')).toHaveValue('')
+    await expect(page.getByRole('heading', { name: /Show me a response with/ })).toBeVisible()
+  })
+
+  const link = (state: unknown) => `/app#s=${deflateRawSync(Buffer.from(JSON.stringify(state))).toString('base64url')}`
+
+  test('a share link with an unknown tab opens its sample on a real tab and says so', async ({ page }) => {
+    await page.goto(link({ sample: 'ecommerce', tab: 'bogus', params: {}, judgments: {} }))
+    await expect(toast(page)).toContainText('This share link names an unknown tab "bogus", so it was ignored.')
+    await expect(page.locator('.pill')).toHaveText('10 hits of 2,184')
+    await expect(selected(page)).toHaveCount(1)
+  })
+
+  test('a share link with an unknown sample loads no sample and says so', async ({ page }) => {
+    await page.goto(link({ sample: 'nope', tab: 'tune' }))
+    await expect(toast(page)).toContainText('This share link names an unknown sample "nope", so it was ignored.')
+    await expect(page.locator('.pill')).toHaveCount(0)
+    await expect(page.getByLabel('Load a sample')).toHaveValue('')
+  })
 })
 
 // ---- site -------------------------------------------------------------------------------
