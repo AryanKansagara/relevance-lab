@@ -1,6 +1,7 @@
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
+import { deflateRawSync } from 'node:zlib'
 import { attribute, bm25Score, ExplainParseError, parseNode, parseResponse, verdict, type RawExplanation } from './explain.ts'
 import { bumpColumns, compare, diffTerm, observedParams, replay, sanity } from './replay.ts'
 import { coverage, diagnose, distribution, linear, listsFromHits, normalize, parseList, rrf } from './hybrid.ts'
@@ -418,6 +419,38 @@ test('share state round-trips through the URL hash', async () => {
   const encoded = await encodeState(state)
   assert.match(encoded, /^[\w-]+$/)
   assert.deepEqual(await decodeState(encoded), state)
+})
+
+test('damaged share links are rejected with one error and no unhandled rejection', async () => {
+  const unhandled: unknown[] = []
+  const onUnhandled = (e: unknown) => unhandled.push(e)
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const deflated = (text: string) => deflateRawSync(Buffer.from(text)).toString('base64url')
+    const valid = deflated(JSON.stringify({ tab: 'tune', params: { k1: 0.9 } }))
+    const damaged = [
+      'AAAA', // valid base64url, not valid deflate data (truncated)
+      'abc',
+      'AAAAAAAAAAAAAAAA', // invalid stored block lengths
+      'eJwDAAAAAAE',
+      'e30', // base64 of "{}", which is not deflate data
+      '%%%', // not base64 at all
+      '', // empty
+      valid.slice(0, -4), // a real link cut short
+      deflated('not json'),
+      deflated('null'), // valid JSON that is not a workspace
+      deflated('42'),
+      deflated('"text"'),
+      deflated('[1,2]'),
+    ]
+    for (const hash of damaged) await assert.rejects(decodeState(hash), Error, `should reject ${JSON.stringify(hash)}`)
+    assert.deepEqual(await decodeState(valid), { tab: 'tune', params: { k1: 0.9 } })
+    // Rejections from the writable side surface on a later tick, so give them a chance to fire.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.deepEqual(unhandled, [])
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
 })
 
 test('suggestParams raises nDCG, and its result reproduces under replay', () => {

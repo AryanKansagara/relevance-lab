@@ -5,11 +5,9 @@ import { test as base, expect } from '@playwright/test'
  * answered with an empty stylesheet so the page settles) and fails on any
  * uncaught page error, console error or request that left the app origin.
  */
-export const test = base.extend<{ problems: string[]; knownPageErrors: RegExp[] }>({
-  /** Page errors a test tolerates because they are tracked as app bugs. Keep this empty otherwise. */
-  knownPageErrors: [[], { option: true }],
+export const test = base.extend<{ problems: string[] }>({
   problems: [
-    async ({ page, baseURL, knownPageErrors }, use) => {
+    async ({ page, baseURL }, use) => {
       const problems: string[] = []
       const origin = new URL(baseURL!).origin
       await page.route('**/*', (route) => {
@@ -19,9 +17,7 @@ export const test = base.extend<{ problems: string[]; knownPageErrors: RegExp[] 
         problems.push(`external request blocked: ${url}`)
         return route.abort()
       })
-      page.on('pageerror', (e) => {
-        if (!knownPageErrors.some((re) => re.test(e.message))) problems.push(`pageerror: ${e.message}`)
-      })
+      page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`))
       page.on('console', (m) => {
         if (m.type() === 'error') problems.push(`console.error: ${m.text()}`)
       })
